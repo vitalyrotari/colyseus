@@ -414,7 +414,7 @@ export abstract class Room<State= any, Metadata= any> extends EventEmitter {
       }).
       catch(() => {
         cleanup();
-        this._disposeIfEmpty();
+        this.resetAutoDisposeTimeout();
       });
 
     return reconnection;
@@ -478,7 +478,7 @@ export abstract class Room<State= any, Metadata= any> extends EventEmitter {
     return true;
   }
 
-  protected resetAutoDisposeTimeout(timeoutInSeconds: number) {
+  protected resetAutoDisposeTimeout(timeoutInSeconds: number = 1) {
     clearTimeout(this._autoDisposeTimeout);
 
     if (!this.autoDispose) {
