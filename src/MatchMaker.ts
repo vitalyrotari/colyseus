@@ -14,7 +14,6 @@ import { MatchMakeError } from './errors/MatchMakeError';
 import { SeatReservationError } from './errors/SeatReservationError';
 import { MatchMakerDriver, RoomListingData } from './matchmaker/drivers/Driver';
 import { LocalDriver } from './matchmaker/drivers/LocalDriver';
-import { updateLobby } from './matchmaker/Lobby';
 
 export { MatchMakerDriver, MatchMakeError };
 
@@ -298,8 +297,6 @@ async function handleCreateRoom(roomName: string, clientOptions: ClientOptions):
   await createRoomReferences(room, true);
   await room.listing.save();
 
-  updateLobby(room);
-
   registeredHandler.emit('create', room);
 
   return room.listing;
@@ -436,28 +433,20 @@ async function awaitRoomAvailable(roomToJoin: string, callback: Function): Promi
 }
 
 function onClientJoinRoom(room: Room, client: Client) {
-  updateLobby(room);
   handlers[room.roomName].emit('join', room, client);
 }
 
 function onClientLeaveRoom(room: Room, client: Client, willDispose: boolean) {
-  if (!willDispose) {
-    updateLobby(room);
-  }
-  handlers[room.roomName].emit('leave', room, client);
+  handlers[room.roomName].emit('leave', room, client, willDispose);
 }
 
 function lockRoom(room: Room): void {
-  updateLobby(room);
-
   // emit public event on registered handler
   handlers[room.roomName].emit('lock', room);
 }
 
 async function unlockRoom(room: Room) {
   if (await createRoomReferences(room)) {
-    updateLobby(room);
-
     // emit public event on registered handler
     handlers[room.roomName].emit('unlock', room);
   }
@@ -475,8 +464,6 @@ async function disposeRoom(roomName: string, room: Room) {
   if (room._internalState !== RoomInternalState.DISCONNECTING) {
     await room.listing.remove();
   }
-
-  updateLobby(room, true);
 
   // emit disposal on registered session handler
   handlers[roomName].emit('dispose', room);

@@ -1,7 +1,7 @@
 import * as matchMaker from '../MatchMaker';
 
-import { RoomListingData } from './drivers/Driver';
 import { Room } from '../Room';
+import { RoomListingData } from './drivers/Driver';
 
 const LOBBY_CHANNEL = '$lobby';
 
