@@ -267,6 +267,7 @@ async function handleCreateRoom(roomName: string, clientOptions: ClientOptions):
   // create a RoomCache reference.
   room.listing = driver.createInstance({
     name: roomName,
+    roomId: room.roomId,
     processId,
     ...registeredHandler.getFilterOptions(clientOptions),
   });
