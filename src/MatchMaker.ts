@@ -49,7 +49,7 @@ export function setup(_presence?: Presence, _driver?: MatchMakerDriver, _process
     const clientOptions = args[1] as ClientOptions;
 
     return handleCreateRoom.call(null, rootName, clientOptions);
-  }).then();
+  }).catch(debugAndPrintError);
 
   presence.hset(getRoomCountKey(), processId, '0');
 }
@@ -198,14 +198,14 @@ export function defineRoomType<T extends Type<Room>>(
 
   handlers[name] = registeredHandler;
 
-  cleanupStaleRooms(name).then();
+  cleanupStaleRooms(name).catch(debugAndPrintError);
 
   return registeredHandler;
 }
 
 export function removeRoomType(name: string) {
   delete handlers[name];
-  cleanupStaleRooms(name).then();
+  cleanupStaleRooms(name).catch(debugAndPrintError);
 }
 
 export function hasHandler(name: string) {
