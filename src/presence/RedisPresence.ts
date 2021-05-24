@@ -205,5 +205,4 @@ export class RedisPresence implements Presence {
           }
         }
     }
-
 }

@@ -30,6 +30,14 @@ export type SimulationCallback = (deltaTime: number) => void;
 
 export type RoomConstructor<T= any> = new (presence?: Presence) => Room<T>;
 
+export type RoomMessageCallback = (client: Client, message: any) => void;
+export type RoomMessageListener = () => void;
+
+export interface ReservedSeatOptions {
+  ttl: number;
+  [k: string]: any;
+}
+
 export interface IBroadcastOptions extends ISendOptions {
   except?: Client;
 }
@@ -71,12 +79,12 @@ export abstract class Room<State= any, Metadata= any> {
 
   // seat reservation & reconnection
   protected seatReservationTime: number = DEFAULT_SEAT_RESERVATION_TIME;
-  protected reservedSeats: { [sessionId: string]: any } = {};
-  protected reservedSeatTimeouts: { [sessionId: string]: NodeJS.Timer } = {};
+  protected reservedSeats: Map<string, ReservedSeatOptions> = new Map();
+  protected reservedSeatTimeouts: Map<string, NodeJS.Timer> = new Map();
 
-  protected reconnections: { [sessionId: string]: Deferred } = {};
+  protected reconnections: Map<string, Deferred> = new Map();
 
-  private onMessageHandlers: {[id: string]: (client: Client, message: any) => void} = {};
+  private onMessageHandlers: Map<string, RoomMessageCallback> = new Map();
 
   private _serializer: Serializer<State> = new NoneSerializer();
   private _afterNextPatchBroadcasts: IArguments[] = [];
@@ -117,8 +125,9 @@ export abstract class Room<State= any, Metadata= any> {
     return true;
   }
 
-  public hasReachedMaxClients(): boolean {
-    return (this.clients.length + Object.keys(this.reservedSeats).length) >= this.maxClients;
+  public async hasReachedMaxClients(): Promise<boolean> {
+    const totalReservedSeats = await this.countReservedSeat();
+    return (this.clients.length + totalReservedSeats) >= this.maxClients;
   }
 
   public setSeatReservationTime(seconds: number) {
@@ -126,8 +135,24 @@ export abstract class Room<State= any, Metadata= any> {
     return this;
   }
 
-  public hasReservedSeat(sessionId: string): boolean {
-    return this.reservedSeats[sessionId] !== undefined;
+  public async setReservedSeat(sessionId: string, options: ReservedSeatOptions) {
+    this.reservedSeats.set(sessionId, options);
+  }
+
+  public async getReservedSeat(sessionId: string): Promise<ReservedSeatOptions | undefined> {
+    return this.reservedSeats.get(sessionId);
+  }
+
+  public async deleteReservedSeat(sessionId: string) {
+    this.reservedSeats.delete(sessionId);
+  }
+
+  public async hasReservedSeat(sessionId: string): Promise<boolean> {
+    return this.reservedSeats.has(sessionId);
+  }
+
+  public async countReservedSeat(): Promise<number> {
+    return this.reservedSeats.size;
   }
 
   public setSimulationInterval(onTickCallback?: SimulationCallback, delay: number = DEFAULT_SIMULATION_INTERVAL): void {
@@ -181,7 +206,7 @@ export abstract class Room<State= any, Metadata= any> {
         this.listing.metadata[field] = meta[field];
       }
 
-      // `MongooseDriver` workaround: persit metadata mutations
+      // `MongooseDriver` workaround: persist metadata mutations
       if ('markModified' in this.listing) {
         (this.listing as any).markModified('metadata');
       }
@@ -265,12 +290,25 @@ export abstract class Room<State= any, Metadata= any> {
     }
   }
 
-  public onMessage<T = any>(messageType: '*', callback: (client: Client, type: string | number, message: T) => void);
-  public onMessage<T = any>(messageType: string | number, callback: (client: Client, message: T) => void);
-  public onMessage<T = any>(messageType: '*' | string | number, callback: (...args: any[]) => void) {
-    this.onMessageHandlers[messageType] = callback;
+  public onMessage<T = any>(
+    messageType: '*',
+    callback: (client: Client, type: string | number, message: T) => void,
+  ): RoomMessageListener;
+
+  public onMessage<T = any>(
+    messageType: string | number,
+    callback: (client: Client, message: T) => void,
+  ): RoomMessageListener;
+
+  public onMessage<T = any>(
+    messageType: '*' | string | number,
+    callback: (...args: any[]) => void,
+  ): RoomMessageListener {
+    this.onMessageHandlers.set(`${messageType}`, callback);
     // returns a method to unbind the callback
-    return () => delete this.onMessageHandlers[messageType];
+    return () => {
+      this.onMessageHandlers.delete(`${messageType}`);
+    };
   }
 
   public async disconnect(): Promise<any> {
@@ -282,7 +320,7 @@ export abstract class Room<State= any, Metadata= any> {
     const delayedDisconnection = new Promise<void>((resolve) =>
       this._events.once('disconnect', () => resolve()));
 
-    for (const reconnection of Object.values(this.reconnections)) {
+    for (const reconnection of this.reconnections.values()) {
       reconnection.reject();
     }
 
@@ -303,9 +341,9 @@ export abstract class Room<State= any, Metadata= any> {
   public async ['_onJoin'](client: Client, req?: http.IncomingMessage) {
     const sessionId = client.sessionId;
 
-    if (this.reservedSeatTimeouts[sessionId]) {
-      clearTimeout(this.reservedSeatTimeouts[sessionId]);
-      delete this.reservedSeatTimeouts[sessionId];
+    if (this.reservedSeatTimeouts.has(sessionId)) {
+      clearTimeout(this.reservedSeatTimeouts.get(sessionId));
+      this.reservedSeatTimeouts.delete(sessionId);
     }
 
     // clear auto-dispose timeout.
@@ -315,18 +353,20 @@ export abstract class Room<State= any, Metadata= any> {
     }
 
     // get seat reservation options and clear it
-    const options = this.reservedSeats[sessionId];
-    delete this.reservedSeats[sessionId];
+    const options = await this.getReservedSeat(sessionId);
+
+    // remove seat reservation
+    await this.deleteReservedSeat(sessionId);
 
     // bind clean-up callback when client connection closes
     client.ref.once('close', this._onLeave.bind(this, client));
 
     this.clients.push(client);
 
-    const reconnection = this.reconnections[sessionId];
+    const reconnection = this.reconnections.get(sessionId);
+
     if (reconnection) {
       reconnection.resolve(client);
-
     } else {
       try {
         client.auth = await this.onAuth(client, options, req);
@@ -347,10 +387,6 @@ export abstract class Room<State= any, Metadata= any> {
         }
 
         throw e;
-
-      } finally {
-        // remove seat reservation
-        delete this.reservedSeats[sessionId];
       }
     }
 
@@ -367,41 +403,42 @@ export abstract class Room<State= any, Metadata= any> {
     ));
   }
 
-  public allowReconnection(previousClient: Client, seconds: number = Infinity): Deferred {
+  public async allowReconnection(previousClient: Client, seconds: number = Infinity): Promise<Deferred> {
     if (this.internalState === RoomInternalState.DISCONNECTING) {
-      this._disposeIfEmpty(); // gracefully shutting down
+      await this._disposeIfEmpty(); // gracefully shutting down
       throw new Error('disconnecting');
     }
 
     const sessionId = previousClient.sessionId;
-    this._reserveSeat(sessionId, true, seconds, true);
+    await this._reserveSeat(sessionId, true, seconds, true);
 
     // keep reconnection reference in case the user reconnects into this room.
     const reconnection = new Deferred<Client>();
-    this.reconnections[sessionId] = reconnection;
+    this.reconnections.set(sessionId, reconnection);
 
     if (seconds !== Infinity) {
       // expire seat reservation after timeout
-      this.reservedSeatTimeouts[sessionId] = setTimeout(() =>
-        reconnection.reject(false), seconds * 1000);
+      this.reservedSeatTimeouts.set(sessionId, setTimeout(() => {
+        reconnection.reject(false);
+      }, seconds * 1000));
     }
 
-    const cleanup = () => {
-      delete this.reservedSeats[sessionId];
-      delete this.reconnections[sessionId];
-      delete this.reservedSeatTimeouts[sessionId];
+    const cleanup = async () => {
+      this.reconnections.delete(sessionId);
+      this.reservedSeatTimeouts.delete(sessionId);
+      await this.deleteReservedSeat(sessionId);
     };
 
     reconnection.
-      then((newClient) => {
+      then(async (newClient) => {
         newClient.auth = previousClient.auth;
         previousClient.ref = newClient.ref; // swap "ref" for convenience
         previousClient.state = ClientState.RECONNECTED;
-        clearTimeout(this.reservedSeatTimeouts[sessionId]);
-        cleanup();
+        clearTimeout(this.reservedSeatTimeouts.get(sessionId));
+        await cleanup();
       }).
-      catch(() => {
-        cleanup();
+      catch(async () => {
+        await cleanup();
         this.resetAutoDisposeTimeout();
       });
 
@@ -415,9 +452,9 @@ export abstract class Room<State= any, Metadata= any> {
       return;
     }
 
-    this._autoDisposeTimeout = setTimeout(() => {
+    this._autoDisposeTimeout = setTimeout(async () => {
       this._autoDisposeTimeout = undefined;
-      this._disposeIfEmpty();
+      await this._disposeIfEmpty();
     }, timeoutInSeconds * 1000);
   }
 
@@ -473,6 +510,7 @@ export abstract class Room<State= any, Metadata= any> {
 
     if (length > 0) {
       for (let i = 0; i < length; i++) {
+        // @ts-ignore
         this.broadcast.apply(this, this._afterNextPatchBroadcasts[i]);
       }
 
@@ -488,20 +526,25 @@ export abstract class Room<State= any, Metadata= any> {
     seconds: number = this.seatReservationTime,
     allowReconnection: boolean = false,
   ) {
-    if (!allowReconnection && this.hasReachedMaxClients()) {
+    const hasReachedMaxClients = await this.hasReachedMaxClients();
+
+    if (!allowReconnection && hasReachedMaxClients) {
       return false;
     }
 
-    this.reservedSeats[sessionId] = joinOptions;
+    await this.setReservedSeat(sessionId, {
+      ttl: Date.now(),
+      ...(joinOptions ?? {}),
+    });
 
     if (!allowReconnection) {
       await this._incrementClientCount();
 
-      this.reservedSeatTimeouts[sessionId] = setTimeout(async () => {
-        delete this.reservedSeats[sessionId];
-        delete this.reservedSeatTimeouts[sessionId];
+      this.reservedSeatTimeouts.set(sessionId, setTimeout(async () => {
+        this.reservedSeatTimeouts.delete(sessionId);
+        await this.deleteReservedSeat(sessionId);
         await this._decrementClientCount();
-      }, seconds * 1000);
+      }, seconds * 1000));
 
       this.resetAutoDisposeTimeout(seconds);
     }
@@ -509,12 +552,13 @@ export abstract class Room<State= any, Metadata= any> {
     return true;
   }
 
-  private _disposeIfEmpty() {
+  private async _disposeIfEmpty() {
+    const totalReservedSeats = await this.countReservedSeat();
     const willDispose = (
       this.autoDispose &&
       this._autoDisposeTimeout === undefined &&
       this.clients.length === 0 &&
-      Object.keys(this.reservedSeats).length === 0
+      totalReservedSeats === 0
     );
 
     if (willDispose) {
@@ -580,16 +624,13 @@ export abstract class Room<State= any, Metadata= any> {
         return;
       }
 
-      if (this.onMessageHandlers[messageType]) {
-        this.onMessageHandlers[messageType](client, message);
-
-      } else if (this.onMessageHandlers['*']) {
-        (this.onMessageHandlers['*'] as any)(client, messageType, message);
-
+      if (this.onMessageHandlers.has(`${messageType}`)) {
+        this.onMessageHandlers.get(`${messageType}`)(client, message);
+      } else if (this.onMessageHandlers.has('*')) {
+        (this.onMessageHandlers.get('*') as any)(client, messageType, message);
       } else {
         debugAndPrintError(`onMessage for "${messageType}" not registered.`);
       }
-
     } else if (code === Protocol.JOIN_ROOM) {
       // join room has been acknowledged by the client
       client.state = ClientState.JOINED;
@@ -640,7 +681,7 @@ export abstract class Room<State= any, Metadata= any> {
     }
 
     if (client.state !== ClientState.RECONNECTED) {
-      // try to dispose immediatelly if client reconnection isn't set up.
+      // try to dispose immediately if client reconnection isn't set up.
       const willDispose = await this._decrementClientCount();
 
       this._events.emit('leave', client, willDispose);
@@ -649,9 +690,11 @@ export abstract class Room<State= any, Metadata= any> {
 
   private async _incrementClientCount() {
     // lock automatically when maxClients is reached
-    if (!this._locked && this.hasReachedMaxClients()) {
+    const hasReachedMaxClients = await this.hasReachedMaxClients();
+
+    if (!this._locked && hasReachedMaxClients) {
       this._maxClientsReached = true;
-      this.lock.call(this, true);
+      await this.lock();
     }
 
     await this.listing.updateOne({
@@ -661,7 +704,7 @@ export abstract class Room<State= any, Metadata= any> {
   }
 
   private async _decrementClientCount() {
-    const willDispose = this._disposeIfEmpty();
+    const willDispose = await this._disposeIfEmpty();
 
     if (this.internalState === RoomInternalState.DISCONNECTING) {
       return;
@@ -671,7 +714,7 @@ export abstract class Room<State= any, Metadata= any> {
     if (!willDispose) {
       if (this._maxClientsReached && !this._lockedExplicitly) {
         this._maxClientsReached = false;
-        this.unlock.call(this, true);
+        await this.unlock();
       }
 
       // update room listing cache

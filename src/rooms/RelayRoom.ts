@@ -36,7 +36,7 @@ defineTypes(State, {
 export class RelayRoom extends Room<State> { // tslint:disable-line
   public allowReconnectionTime: number = 0;
 
-  public onCreate(options: Partial<{
+  public async onCreate(options: Partial<{
     maxClients: number,
     allowReconnectionTime: number,
     metadata: any,
@@ -52,10 +52,10 @@ export class RelayRoom extends Room<State> { // tslint:disable-line
     }
 
     if (options.metadata) {
-      this.setMetadata(options.metadata);
+      await this.setMetadata(options.metadata);
     }
 
-    this.onMessage('*', (client: Client, type: string, message: any) => {
+    this.onMessage('*', (client: Client, type: string | number, message: any) => {
       this.broadcast(type, [client.sessionId, message], { except: client });
     });
   }
@@ -91,5 +91,4 @@ export class RelayRoom extends Room<State> { // tslint:disable-line
       }
     }
   }
-
 }

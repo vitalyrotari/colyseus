@@ -44,9 +44,12 @@ export function setup(_presence?: Presence, _driver?: MatchMakerDriver, _process
   /**
    * Subscribe to remote `handleCreateRoom` calls.
    */
-  subscribeIPC(presence, processId, getProcessChannel(), (_, args) => {
-    return handleCreateRoom.apply(undefined, args);
-  });
+  subscribeIPC(presence, processId, getProcessChannel(), (_, args: any[]) => {
+    const rootName = args[0] as string;
+    const clientOptions = args[1] as ClientOptions;
+
+    return handleCreateRoom.call(null, rootName, clientOptions);
+  }).then();
 
   presence.hset(getRoomCountKey(), processId, '0');
 }
@@ -128,7 +131,7 @@ export async function joinById(roomId: string, clientOptions: ClientOptions = {}
  * Perform a query for all cached rooms
  */
 export async function query(conditions: Partial<IRoomListingData> = {}) {
-  return await driver.find(conditions);
+  return driver.find(conditions);
 }
 
 /**
@@ -152,7 +155,7 @@ export async function findOneRoomAvailable(roomName: string, clientOptions: Clie
       roomQuery.sort(handler.sortOptions);
     }
 
-    return await roomQuery;
+    return roomQuery;
   });
 }
 
@@ -195,18 +198,18 @@ export function defineRoomType<T extends Type<Room>>(
 
   handlers[name] = registeredHandler;
 
-  cleanupStaleRooms(name);
+  cleanupStaleRooms(name).then();
 
   return registeredHandler;
 }
 
 export function removeRoomType(name: string) {
   delete handlers[name];
-  cleanupStaleRooms(name);
+  cleanupStaleRooms(name).then();
 }
 
 export function hasHandler(name: string) {
-  return handlers[ name ] !== undefined;
+  return handlers[name] !== undefined;
 }
 
 /**
@@ -225,8 +228,7 @@ export async function createRoom(roomName: string, clientOptions: ClientOptions)
 
   if (processIdWithFewerRooms === processId) {
     // create the room on this process!
-    return await handleCreateRoom(roomName, clientOptions);
-
+    return handleCreateRoom(roomName, clientOptions);
   } else {
     // ask other process to create the room!
     let room: RoomListingData;
@@ -292,14 +294,14 @@ async function handleCreateRoom(roomName: string, clientOptions: ClientOptions):
   room.listing.roomId = room.roomId;
   room.listing.maxClients = room.maxClients;
 
-  // imediatelly ask client to join the room
+  // immediately ask client to join the room
   debugMatchMaking('spawning \'%s\', roomId: %s, processId: %s', roomName, room.roomId, processId);
 
-  room._events.on('lock', lockRoom.bind(this, room));
-  room._events.on('unlock', unlockRoom.bind(this, room));
-  room._events.on('join', onClientJoinRoom.bind(this, room));
-  room._events.on('leave', onClientLeaveRoom.bind(this, room));
-  room._events.once('dispose', disposeRoom.bind(this, roomName, room));
+  room._events.on('lock', lockRoom.bind(null, room));
+  room._events.on('unlock', unlockRoom.bind(null, room));
+  room._events.on('join', onClientJoinRoom.bind(null, room));
+  room._events.on('leave', onClientLeaveRoom.bind(null, room));
+  room._events.once('dispose', disposeRoom.bind(null, roomName, room));
   room._events.once('disconnect', () => room._events.removeAllListeners());
 
   // room always start unlocked

@@ -57,7 +57,6 @@ export function retry<T = any>(
 
 export class Deferred<T= any> {
   public promise: Promise<T>;
-
   public resolve: Function;
   public reject: Function;
 
@@ -68,14 +67,13 @@ export class Deferred<T= any> {
     });
   }
 
-  public then(func: (value: T) => any) {
-    return this.promise.then.apply(this.promise, arguments);
+  public get then() {
+    return this.promise.then.bind(this.promise);
   }
 
-  public catch(func: (value: any) => any) {
-    return this.promise.catch(func);
+  public get catch() {
+    return this.promise.catch.bind(this.promise);
   }
-
 }
 
 export function spliceOne(arr: any[], index: number): boolean {

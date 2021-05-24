@@ -13,7 +13,7 @@ import { debugAndPrintError, debugConnection } from '../../Debug';
 import { WebSocketClient } from './WebSocketClient';
 
 function noop() {/* tslint:disable:no-empty */ }
-function heartbeat() { this.pingCount = 0; }
+function heartbeat(this: RawWebSocketClient) { this.pingCount = 0; }
 
 type RawWebSocketClient = WebSocket & { pingCount: number };
 
@@ -76,6 +76,7 @@ export class WebSocketTransport extends Transport {
 
   public simulateLatency(milliseconds: number) {
     const previousSend = WebSocket.prototype.send;
+
     WebSocket.prototype.send = function(...args: any[]) {
       setTimeout(() => previousSend.apply(this, args), milliseconds);
     };
@@ -84,18 +85,19 @@ export class WebSocketTransport extends Transport {
   protected autoTerminateUnresponsiveClients(pingInterval: number, pingMaxRetries: number) {
     // interval to detect broken connections
     this.pingInterval = setInterval(() => {
-      this.wss.clients.forEach((client: RawWebSocketClient) => {
+      this.wss.clients.forEach(function onSocketClient(socket) {
+        const client = socket as RawWebSocketClient;
         //
         // if client hasn't responded after the interval, terminate its connection.
         //
         if (client.pingCount >= pingMaxRetries) {
           // debugConnection(`terminating unresponsive client ${client.sessionId}`);
           debugConnection(`terminating unresponsive client`);
-          return client.terminate();
+          client.terminate();
+        } else {
+          client.pingCount++;
+          client.ping(noop);
         }
-
-        client.pingCount++;
-        client.ping(noop);
       });
     }, pingInterval);
   }
@@ -103,7 +105,7 @@ export class WebSocketTransport extends Transport {
   protected async onConnection(rawClient: RawWebSocketClient, req?: http.IncomingMessage & any) {
     // prevent server crashes if a single client had unexpected error
     rawClient.on('error', (err) => debugAndPrintError(err.message + '\n' + err.stack));
-    rawClient.on('pong', heartbeat);
+    rawClient.on('pong', heartbeat.bind(rawClient));
 
     // compatibility with ws / uws
     const upgradeReq = req || (rawClient as any).upgradeReq;
@@ -121,19 +123,20 @@ export class WebSocketTransport extends Transport {
     const client = new WebSocketClient(sessionId, rawClient);
 
     try {
-      if (!room || !room.hasReservedSeat(sessionId)) {
+      const hasReservedSeat = await room.hasReservedSeat(sessionId);
+
+      if (!room || !hasReservedSeat) {
         throw new Error('seat reservation expired.');
       }
 
       await room._onJoin(client, upgradeReq);
-
     } catch (e) {
       debugAndPrintError(e);
 
       // send error code to client then terminate
-      client.error(e.code, e.message, () =>
-        rawClient.close(Protocol.WS_CLOSE_WITH_ERROR));
+      client.error(e.code, e.message, function onClientError() {
+        rawClient.close(Protocol.WS_CLOSE_WITH_ERROR);
+      });
     }
   }
-
 }

@@ -17,8 +17,8 @@ import { registerNode, unregisterNode } from './discovery';
 import { LocalPresence } from './presence/LocalPresence';
 
 import { ServerError } from './errors/ServerError';
-import { ErrorCode, Protocol } from './Protocol';
-import { Transport } from './transport/Transport';
+import { ErrorCode } from './Protocol';
+import { Client, Transport } from './transport/Transport';
 
 import { TCPTransport } from './transport/TCP/TCPTransport';
 import { WebSocketTransport } from './transport/WebSocket/WebSocketTransport';
@@ -80,7 +80,7 @@ export class Server {
 
   public attach(options: ServerOptions) {
     if (!options.server) { options.server = http.createServer(); }
-    options.server.once('listening', () => this.registerProcessForDiscovery());
+    options.server.once('listening', this.registerProcessForDiscovery.bind(this));
 
     this.attachMatchMakingRoutes(options.server);
 
@@ -118,9 +118,9 @@ export class Server {
     });
   }
 
-  public registerProcessForDiscovery() {
+  public async registerProcessForDiscovery() {
     // register node for proxy/service discovery
-    registerNode(this.presence, {
+    await registerNode(this.presence, {
       port: this.transport.address().port,
       processId: this.processId,
     });
@@ -176,7 +176,10 @@ export class Server {
     const _onMessage = Room.prototype['_onMessage'];
     /* tslint:disable:no-string-literal */
     Room.prototype['_onMessage'] = function(...args: any[]) {
-      setTimeout(() => _onMessage.apply(this, args), halfwayMS);
+      const client = args[0] as Client;
+      const bytes = args[1] as number[];
+
+      setTimeout(_onMessage.bind(this, client, bytes), halfwayMS);
     };
   }
 
@@ -195,11 +198,10 @@ export class Server {
     const listeners = server.listeners('request').slice(0);
     server.removeAllListeners('request');
 
-    server.on('request', (req, res) => {
+    server.on('request', async (req, res) => {
       if (req.url.indexOf(`/${this.matchmakeRoute}`) !== -1) {
         debugMatchMaking('received matchmake request: %s', req.url);
-        this.handleMatchMakeRequest(req, res);
-
+        await this.handleMatchMakeRequest(req, res);
       } else {
         for (let i = 0, l = listeners.length; i < l; i++) {
           listeners[i].call(server, req, res);
@@ -220,7 +222,6 @@ export class Server {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, headers);
       res.end();
-
     } else if (req.method === 'POST') {
       const matchedParams = req.url.match(this.allowedRoomNameChars);
       const matchmakeIndex = matchedParams.indexOf(this.matchmakeRoute);

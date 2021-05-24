@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 
-import { RoomConstructor } from './../Room';
+import { RoomConstructor } from '../Room';
 import { RoomListingData } from './drivers/Driver';
 import { updateLobby } from './Lobby';
 

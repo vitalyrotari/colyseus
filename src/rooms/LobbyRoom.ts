@@ -131,5 +131,4 @@ export class LobbyRoom extends Room { // tslint:disable-line
 
     return isAllowed;
   }
-
 }
